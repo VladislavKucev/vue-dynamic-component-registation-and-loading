@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>Vue.js loading unregistered components on the fly</title>
+    <style>
+        [v-cloak] {
+            display: none;
+        }
+        .text-info {
+            color: #17a2b8!important;
+        }
+        .text-primary {
+            color: #007bff!important;
+        }
+    </style>
+</head>
+<body>
+    <div id="App" v-cloak>
+        <div>Add a few v-test components while checking the console.</div>
+        <div><button type="button" v-on:click="handleClick1" class="btn btn-info">Test1</button></div>
+        <v-component name="v-a" v-on:click="console.log('Hi')"></v-component>
+        <v-component name="v-a"></v-component>
+        <!--
+            prop-test="test" and v-on:click="console.log('Hello')"
+            are just for testing if they will get passed to the real component
+        -->
+        <v-component v-for="c in components"
+                     v-bind:name="c"
+                     prop-test="test"
+                     v-on:click="console.log('Hello')">
+        </v-component>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js",
+                "vue1": "https://unpkg.com/vue@3/dist/vue.runtime.esm-browser.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import { createApp, defineAsyncComponent } from "vue";
+
+        const vm = createApp({
+            data: function () {
+                return {
+                    components: []
+                };
+            },
+
+            methods: {
+                handleClick1: function () {
+                    const result = window.prompt("Enter the component name", "v-test");
+                    if (result) {
+                        this.components.push(result);
+                    }
+                }
+            }
+        });
+
+        vm.component("v-dummy", {
+            template: `<div class="text-primary">This is a dummy just to test if you can also look for registered components</div>`
+        });
+
+        // It doesn't work with registered components, these 2 must be defined as objects.
+        // To avoid conflicts with the native name attribute, consider renaming it.
+        // These 2 components autoinherit attributes by default and this can sometimes lead to weird side effects.
+        // For example v-on:click and so on will be inherited, so disable that behaviour and bind only to what you need
+        // You can also make these 2 objects global properties instead if you don't like being captured like this
+        const $_loading = {
+            inheritAttrs: false,
+            props: ["name"],
+            template: `<div class="text-info">Loading "{{ name }}"...</div>`
+        };
+        const $_error = {
+            // Here you can use $attrs.error of type Error (.message to get the text) if inheritAttrs is true
+            // Otherwise, bind it to a property
+            inheritAttrs: false,
+            props: ["name", "error"],
+            template: `<div class="text-danger">Error "{{ name }}" - {{ error.message }}</div>`,
+        };
+
+        // If you don't want to capture $_cache, you can add it as a global property.
+        // It's recommended to prefix it with $_ to avoid conflicts with Vue's internals. You can access it via this.$_cache
+        // vm.config.globalProperties.$_cache = {};
+        const $_cache = {};
+        vm.component("v-component", {
+            props: {
+                // To avoid conflicts with the native name, consider renaming the prop
+                name: {
+                    type: String,
+                    required: true
+                }
+            },
+
+            // If you have no intention to use the name in a loading/error/underlying components then
+            // you can remove the v-bind:name="name", then only the other attributes will be passed 'down'
+            // However, you must NOT remove it in case such attribute has to get passed to the underlying component,
+            // otherwise it will get captured by v-component but not forwarded any 'deeper' (is this the right word)
+            template: `<component v-bind:is="componentDefinition" v-bind:name="name"></component>`,
+            computed: {
+                componentDefinition: function () {
+                    let v;
+                    // Uncomment the following /**/ if you want to look for statically registered components 1st
+                    // You can NOT look for local components, only for global ones defined by .component()
+                    // If you don't want to capture vm like this, you can either replace it with getCurrentInstance().appContext.app
+                    // import { getCurrentInstance } from "vue";
+                    // or add it as a global property with a name of $_vm or something
+                    /*
+                    v = vm.component(this.name);
+                    if (v) {
+                        return v;
+                    }
+                    */
+                    v = $_cache[this.name];     // this.$_cache if you want to use the global property scenario
+                    if (v) {
+                        return v;
+                    }
+
+                    // It will resolve in 15s, meanwhile you will be able to see the loading and error components
+                    // Do real fetching here like: const p = import(`/app/components/${this.name}.vue.js`);
+                    const p = new Promise((resolve, reject) => {
+                        console.log("Promise " + this.name);    // Just for debugging, remove it
+                        window.setTimeout(() => {
+                            resolve({
+                                template: `<div class="text-info">${this.name} - {{ propTest }}</div>`,
+                                props: {    // To test if the props will be properly inherited
+                                    "prop-test": {
+                                        default: "no prop-test passed"
+                                    }
+                                }
+                            });
+                        }, 15000);
+                    });
+                    v = defineAsyncComponent({
+                        name: this.name,
+                        loader: () => {
+                            console.log("loader " + this.name);     // Just for debugging, remove it
+                            // Capture p, do NOT inline it because the loader gets called again in case of a previous timeout
+                            // In that case you can get 2+ promises per component-type, which therefore will not resolve at the same time
+                            // In real world cases you can inline p but this file is meant to test what happens if a
+                            // component gets resolved after timeout error has been thrown (timesout in 6s, resolves 9s later)
+                            return p;
+
+                            // If the loader has resolved succesfully, it won't get called again even
+                            // if you add another component of the same type dynamically (like in v-for)
+                        },
+                        loadingComponent: $_loading,
+                        delay: 3000,
+                        errorComponent: $_error,
+                        timeout: 6000   // Timeouts do NOT reject the promise(s) returned by loader(), nor onError will be executed
+                    });
+                    $_cache[this.name] = v;     // this.$_cache if you want to use the global property scenario
+                    return v;
+                }
+            }
+        });
+        vm.mount('#App');
+        window.$app = vm;
+    </script>
+</body>
+</html>
