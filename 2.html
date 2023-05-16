@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>Vue.js loading unregistered components on the fly</title>
+    <style>
+        [v-cloak] {
+            display: none;
+        }
+        .text-info {
+            color: #17a2b8!important;
+        }
+        .text-primary {
+            color: #007bff!important;
+        }
+    </style>
+</head>
+<body>
+    <div id="App" v-cloak>
+        <div>Add a few v-test components while checking the console.</div>
+        <div><button type="button" v-on:click="handleClick1" class="btn btn-info">Test1</button></div>
+        
+        <!-- A component with click event -->
+        <v-component is="v-a" v-on:click="console.log('Hi')"></v-component>
+        
+        <!-- A component to test if the prop-test is going to get passed -->
+        <v-component is="v-a" prop-test="asdfgh"></v-component>
+        
+        <!-- A component to test if the slots will get passed -->
+        <v-component is="v-a">
+            <template #default="{ a }">
+                A slot test
+            </template>
+            <template #test>Asdfgh</template>
+        </v-component>
+        
+        <!-- A component with a real scoped slot for testing -->
+        <v-component is="v-slot-test">
+            <template #default="item">
+                <div>Slot Content: {{ item.value }}</div>
+            </template>
+        </v-component>
+        
+        <!--
+            prop-test="test" and v-on:click="console.log('Hello')"
+            are just for testing if they will get passed to the real component
+        -->
+        <v-component v-for="c in components"
+                     v-bind:is="c"
+                     prop-test="test"
+                     v-on:click="console.log('Hello')">
+        </v-component>
+    </div>
+
+    <script type="template" id="v-slot-test-template">
+        <h5>v-slot-test</h5>
+        <template v-for="item in items">
+            <slot v-bind="item">
+                {{ item.name }} : {{ item.value }}<br />
+            </slot>
+        </template>
+    </script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js",
+                "vue1": "https://unpkg.com/vue@3/dist/vue.runtime.esm-browser.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import { createApp, defineAsyncComponent } from "vue";
+        import { openBlock, createElementBlock, toDisplayString, resolveDynamicComponent, createBlock, guardReactiveProps, normalizeProps, isProxy } from "vue";
+
+        const vm = createApp({
+            data: function () {
+                return {
+                    components: []
+                };
+            },
+
+            methods: {
+                handleClick1: function () {
+                    const result = window.prompt("Enter the component name", "v-test");
+                    if (result) {
+                        this.components.push(result);
+                    }
+                }
+            }
+        });
+
+        vm.component("v-dummy", {
+            template: `<div class="text-primary">This is a dummy just to test if you can also look for registered components</div>`
+        });
+
+        vm.component("v-slot-test", {
+            template: "#v-slot-test-template",
+            data: function () {
+                return {
+                    items: [{ name: "Name 1", value: "Value 1"}, { name: "Name 2", value: "Value 2"}]
+                };
+            },
+            inheritAttrs: false
+        });
+
+        // 2 functional components, you can replace them with object ones.
+        // Do NOT register them - they cannot be resolved by name in the defineAsyncComponent().
+        // if no props are defined (via result.props = [...]) then props and b.attrs refer to the same object.
+        const $_loading = (function () {
+            const hoisted_1 = { class: "text-info" };
+            const result = function (props, b) {
+                return (openBlock(), createElementBlock("div", hoisted_1, "Loading \"" + toDisplayString(props.is) + "\"...", 1 /* TEXT */));
+            };
+            result.inheritAttrs = false;    // To prevent the auto-inheritance of v-on:handlers.
+            return result;
+        })();
+
+        const $_error = (function () {
+            const hoisted_1 = { class: "text-danger" };
+            const result  = function (props) {
+                return (openBlock(), createElementBlock("div", hoisted_1, "Error \"" + toDisplayString(props.is) + "\" - " + toDisplayString(props.error.message), 1 /* TEXT */));
+            };
+            result.inheritAttrs = false;
+            return result;
+        })();
+        
+        // Another functional component, the scoped slots could not be passed properly in an object one.
+        // Inject the vue app so you can look for registered components.
+        const $_v_component = (function ($vm) {
+            const $_cache = {};
+            
+            const $_getComponentDefinition = function (name) {
+                let v;
+                v = $vm.component(name);
+                if (v) {
+                    return v;
+                }
+                v = $_cache[name];
+                if (v) {
+                    return v;
+                }
+                
+                // replace 'new Promise()' with something real like 'import("...")'
+                const p = new Promise((resolve, reject) => {
+                    console.log("Promise " + name);
+                    window.setTimeout(() => {
+                        resolve({
+                            template: `<div class="text-info">${name} - {{ propTest }} <slot>No slot content</slot></div>`,
+                            props: {
+                                "prop-test": {
+                                    default: "no prop-test passed"
+                                }
+                            }
+                        });
+                    }, 15000);
+                });
+                v = defineAsyncComponent({
+                    name: name,
+                    loader: () => {
+                        console.log("loader " + name);
+                        return p;
+                    },
+                    loadingComponent: $_loading,
+                    delay: 3000,
+                    errorComponent: $_error,
+                    timeout: 6000
+                });
+                $_cache[name] = v;
+                return v;
+            };
+            
+            return function (props, b) {
+                // the commented line is what was generated by the SFC playground. I removed the calls because I don't see much of a point in them.
+                // return (openBlock(), createBlock(resolveDynamicComponent($_getComponentDefinition(props.is)), normalizeProps(guardReactiveProps(b.attrs)), null, 16 /* FULL_PROPS */));
+                return (openBlock(), createBlock(resolveDynamicComponent($_getComponentDefinition(props.is)), props, b.slots, 16 /* FULL_PROPS */));
+            };
+        })(vm);
+        
+        vm.component("v-component", $_v_component);
+        vm.mount('#App');
+        window.$app = vm;
+    </script>
+</body>
+</html>
